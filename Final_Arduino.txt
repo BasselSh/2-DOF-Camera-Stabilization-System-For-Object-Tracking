@@ -1,0 +1,289 @@
+//Define Pins x timer 5
+# define X_DIRgnd 38 //DIR-(DIR) axis stepper motor direction control  Blue
+# define X_DIR_5v 40 //DIR+(+5v) axis stepper motor direction control  Brown
+# define X_STPgnd 42 //PUL-(PUL) axis stepper motor step control       Black
+# define X_STP_5v 46 //PUL+(+5v) axis stepper motor step control       RED
+/////////////////////////////////////////////////////////
+//Define Pins y timer 4
+# define Y_DIRgnd 2 //DIR-(DIR) axis stepper motor direction control  Blue
+# define Y_DIR_5v 3 //DIR+(+5v) axis stepper motor direction control  Brown
+# define Y_STPgnd 4 //PUL-(PUL) axis stepper motor step control       Black
+# define Y_STP_5v 5 //PUL+(+5v) axis stepper motor step control       RED
+///////////////////////////////////////////////////////////
+#define stepsPerRevolution 6400 //full pulse
+boolean toggle0 = 0;
+boolean toggle1 = 0;
+boolean toggle2 = 0;
+boolean lost=false;
+double theta=0;
+int x=0, y=0;
+String infox, infoy, code;
+int erx = 0, ery = 0;
+int spdx=0, spdy=0;
+volatile int fx=1, fy=1;
+float k = 1;
+volatile int jx=10000, jy=10000;
+
+double control_signal_x, control_signal_y;
+double kpx = 8.5, kpy = 8.5 ; //proportional gain  23                     10.44
+double kix = 5.0, kiy = 5.0; //integral gain 0.017   1.115  0.08        65.4545
+double kdx = 0.23, kdy = 0.23; //derivative gain       1.522   0.5         0.3996
+
+int T = 33; //sample time in milliseconds (ms)
+unsigned long last_time_x = 0, last_time_y = 0;
+unsigned long current_time_x = 0, current_time_y = 0;
+
+double total_error_x = 0, total_error_y = 0;
+double last_error_x = 0, last_error_y = 0;
+int delta_time_x = 0, delta_time_y = 0;
+double delta_error_x = 0, delta_error_y = 0;
+double max_control = 20000;
+double min_control = 15;
+double error;
+boolean bx = false, by = false;
+void setup() {
+  cli();
+  TCCR4A = (0 << COM4A1) | (0 << COM4A0) | (0 << COM4B1) | (0 << COM4B0) | (0 << COM4C1) | (0 << COM4C0) | (0 << WGM41) | (0 << WGM40);
+  TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (1 << CS42) | (0 << CS41) | (1 << CS40); //timer on
+  //TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (0 << CS42) | (0 << CS41) | (0 << CS40); //timer off
+
+  TIMSK4 = (0 << ICIE4) | (0 << OCIE4C) | (0 << OCIE4B) | (1 << OCIE4A) | (0 << TOIE4);
+  OCR4A = 32;
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  DDRL = (0 << DDL7) | (0 << DDL6) | (0 << DDL5) | (0 << DDL4) | (1 << DDL3) | (0 << DDL2) | (0 << DDL1) | (0 << DDL0);
+  DDRE = (0 << DDE7) | (0 << DDE6) | (0 << DDE5) | (0 << DDE4) | (1 << DDE3) | (0 << DDE2) | (0 << DDE1) | (0 << DDE0);
+  // State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=0 Bit2=T Bit1=T Bit0=T
+  PORTL = (0 << PORTL7) | (0 << PORTL6) | (0 << PORTL5) | (0 << PORTL4) | (0 << PORTL3) | (0 << PORTL2) | (0 << PORTL1) | (0 << PORTL0);
+
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  TCCR5A = (0 << COM5A1) | (1 << COM5A0) | (0 << COM5B1) | (0 << COM5B0) | (0 << COM5C1) | (0 << COM5C0) | (0 << WGM51) | (0 << WGM50);
+  TCCR5B = (0 << ICNC5) | (0 << ICES5) | (0 << WGM53) | (1 << WGM52) | (1 << CS52) | (0 << CS51) | (1 << CS50);
+  //TCCR5B=(0<<ICNC5) | (0<<ICES5) | (0<<WGM53) | (1<<WGM52) | (0<<CS52) | (0<<CS51) | (0<<CS50); disable timer5
+
+  TCNT5H = 0x00;
+  TCNT5L = 0x00;
+  ICR5H = 0x00;
+  ICR5L = 0x00;
+  OCR5A = 20000; // just a large number for low motor speed
+  TIMSK5 = (0 << ICIE5) | (0 << OCIE5C) | (0 << OCIE5B) | (1 << OCIE5A) | (0 << TOIE5);
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  TCCR3A = (0 << COM3A1) | (1 << COM3A0) | (0 << COM3B1) | (0 << COM3B0) | (0 << COM3C1) | (0 << COM3C0) | (0 << WGM31) | (0 << WGM30);
+  TCCR3B = (0 << ICNC3) | (0 << ICES3) | (0 << WGM33) | (1 << WGM32) | (1 << CS32) | (0 << CS31) | (1 << CS30);
+  //TCCR3B=(0<<ICNC4) | (0<<ICES4) | (0<<WGM43) | (1<<WGM42) | (1<<CS42) | (0<<CS41) | (0<<CS40);
+
+  TCNT3H = 0x00;
+  TCNT3L = 0x00;
+  ICR3H = 0x00;
+  ICR3L = 0x00;
+  OCR3A = 20000; // just a large number for low motor speed
+  TIMSK3 = (0 << ICIE3) | (0 << OCIE3C) | (0 << OCIE3B) | (1 << OCIE3A) | (0 << TOIE3);
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  sei();
+  // Declare pins as output:
+  pinMode (X_DIRgnd, OUTPUT); //DIR-(DIR)
+  pinMode (X_DIR_5v, OUTPUT); //DIR+(+5v)
+  pinMode (X_STPgnd, OUTPUT); //PUL-(PUL)
+  digitalWrite (X_DIRgnd, LOW); //DIR-(DIR)
+  digitalWrite (X_DIR_5v, LOW); //DIR+(+5v)
+  digitalWrite (X_STPgnd, LOW); //PUL-(PUL)
+  ///////////////////////////////////////////////////////
+  pinMode (Y_DIRgnd, OUTPUT); //DIR-(DIR)
+  pinMode (Y_DIR_5v, OUTPUT); //DIR+(+5v)
+  pinMode (Y_STPgnd, OUTPUT); //PUL-(PUL)
+  digitalWrite (Y_DIRgnd, LOW); //DIR-(DIR)
+  digitalWrite (Y_DIR_5v, LOW); //DIR+(+5v)
+  digitalWrite (Y_STPgnd, LOW); //PUL-(PUL)
+  ////////////////////////////////////////////////////////
+
+
+  Serial.begin(115200);
+  Serial.setTimeout(50);
+  while (!Serial) {}
+  //  while (1)
+  //  {
+  //    Serial.readStringUntil('x');
+  //    code = Serial.readStringUntil('y');
+  //    if (code=="101")
+  //    {
+  //          //delay(4);
+  //          TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (1 << CS42) | (0 << CS41) | (1 << CS40);
+  //          break;
+  //
+  //    }
+  //    }
+}
+
+
+void dir(int e, char a)
+{
+  if (a == 'x')
+  {
+    if (e < 0)
+    {
+      digitalWrite (X_DIR_5v, LOW);
+    }
+    if (e > 0)
+    {
+      digitalWrite (X_DIR_5v, HIGH);
+    }
+  }
+  else if (a == 'y')
+  {
+    if (e < 0)
+    {
+      digitalWrite (Y_DIR_5v, HIGH);
+    }
+    if (e > 0)
+    {
+      digitalWrite (Y_DIR_5v, LOW);
+    }
+  }
+}
+
+
+
+void read1()
+{
+  if (Serial.available() > 10)
+  {
+
+    Serial.readStringUntil('a');
+    //delay(5);
+    infox = Serial.readStringUntil('c');
+    infoy = Serial.readStringUntil('d');
+    x = infox.toInt();
+    y = infoy.toInt();
+    if (x != 0)
+    {
+      erx = x;
+      if (erx == 404)
+      {
+        erx = 0;
+      }
+      bx = true;
+    }
+    if (y != 0)
+    {
+      ery = y;
+      if (ery == 404)
+      {
+        ery = 0;
+      }
+      by = true;
+      //Serial.print("000");
+      //Serial.println(ery);
+    }
+    if(erx==700&& ery==700)
+    {
+      //lost=true;
+      erx=0;
+      ery=0;
+    }
+    else
+    lost=false;
+  }
+}
+
+
+
+void PID_Control_x()
+{
+    spdx = k * erx;
+    total_error_x += spdx;
+    delta_error_x = spdx - last_error_x;
+    control_signal_x = kpx * spdx + (0.001 * kix * T) * total_error_x + 1000 * (kdx / T) * delta_error_x;
+    if (control_signal_x < 0) control_signal_x = -control_signal_x;
+    if (control_signal_x >= max_control) control_signal_x = max_control;
+    else if (control_signal_x <= min_control) control_signal_x = min_control;
+    fx = control_signal_x;
+    jx = (7812.5 / fx) - 1;
+//    if (jx > 145)
+//    {
+////      TCCR5B = (0 << ICNC5) | (0 << ICES5) | (0 << WGM53) | (1 << WGM52) | (0 << CS52) | (0 << CS51) | (0 << CS50);
+////      PORTL = (0 << PORTL7) | (0 << PORTL6) | (0 << PORTL5) | (0 << PORTL4) | (0 << PORTL3) | (0 << PORTL2) | (0 << PORTL1) | (0 << PORTL0);
+//   jx=65000;
+//    } else
+//    {
+//      //TCCR5B = (0 << ICNC5) | (0 << ICES5) | (0 << WGM53) | (1 << WGM52) | (1 << CS52) | (0 << CS51) | (1 << CS50);
+//    }
+  
+  last_error_x = spdx;
+
+
+}
+
+void PID_Control_y()
+{
+
+  spdy = k * ery;
+  total_error_y += spdy;
+  delta_error_y = spdy - last_error_y;
+  control_signal_y = kpy * spdy + (0.001 * kiy * T) * total_error_y + 1000 * (kdy / T) * delta_error_y;
+  control_signal_y = control_signal_y * 1.453;
+  if (control_signal_y < 0) control_signal_y = -control_signal_y;
+  if (control_signal_y >= max_control * 1.453) control_signal_y = max_control * 1.453;
+  else if (control_signal_y <= min_control) control_signal_y = min_control;
+  fy = control_signal_y;
+  jy = (7812.5 / fy) - 1;
+//  if (jy > 380)
+//  {
+////    TCCR3B = (0 << ICNC3) | (0 << ICES3) | (0 << WGM33) | (1 << WGM32) | (0 << CS32) | (0 << CS31) | (0 << CS30);
+////    PORTL = (0 << PORTL7) | (0 << PORTL6) | (0 << PORTL5) | (0 << PORTL4) | (0 << PORTL3) | (0 << PORTL2) | (0 << PORTL1) | (0 << PORTL0);
+//    jy=65000;
+//  } else
+//  {
+////    TCCR3B = (0 << ICNC3) | (0 << ICES3) | (0 << WGM33) | (1 << WGM32) | (1 << CS32) | (0 << CS31) | (1 << CS30);
+//  }
+    last_error_y = spdy;
+}
+
+
+
+void loop()
+{
+ 
+  //read1();
+//  if(lost)
+//  {
+//    theta=atan2(delta_error_y,delta_error_x);
+//    fx=max_control*cos(theta);
+//    fy=max_control*sin(theta);
+//    jx = (7812.5 / fx) - 1;
+//    jy = (7812.5 / fy) - 1;
+//    last_error_x = 0;
+//    last_error_y = 0;
+//  }
+//  else
+//  {
+
+    if (bx)
+    {
+      dir(erx, 'x');
+      PID_Control_x();
+      bx = false;
+    }
+    if (by)
+    {
+      dir(ery, 'y');
+      PID_Control_y();
+      by = false;
+  
+    }
+ 
+  
+  
+}
+
+ISR(TIMER3_COMPA_vect)
+{
+  OCR3A = jy;
+}
+ISR(TIMER5_COMPA_vect)
+{
+  OCR5A = jx;
+}
+
+ISR(TIMER4_COMPA_vect)
+{
+  read1();
+}
