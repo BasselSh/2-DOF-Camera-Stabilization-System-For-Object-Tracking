@@ -1,0 +1,358 @@
+#include <Wire.h>
+#include <math.h>
+const int MPU = 0x68; // MPU6050 I2C address
+float AccX, AccY, AccZ;
+float GyroX, GyroY, GyroZ;
+float accAngleX, accAngleY, gyroAngleX, gyroAngleY, gyroAngleZ;
+float roll, pitch, yaw;
+float AccErrorX, AccErrorY, GyroErrorX, GyroErrorY, GyroErrorZ;
+float elapsedTime, currentTime, previousTime;
+int c = 0;
+int fxg,fyg,fzg;
+
+int ezg;
+int control_signal_gz;
+//Define Pins x timer 5
+# define X_DIRgnd 38 //DIR-(DIR) axis stepper motor direction control  Blue
+# define X_DIR_5v 40 //DIR+(+5v) axis stepper motor direction control  Brown
+# define X_STPgnd 42 //PUL-(PUL) axis stepper motor step control       Black
+# define X_STP_5v 46 //PUL+(+5v) axis stepper motor step control       RED
+/////////////////////////////////////////////////////////
+//Define Pins y timer 4
+# define Y_DIRgnd 2 //DIR-(DIR) axis stepper motor direction control  Blue
+# define Y_DIR_5v 3 //DIR+(+5v) axis stepper motor direction control  Brown
+# define Y_STPgnd 4 //PUL-(PUL) axis stepper motor step control       Black
+# define Y_STP_5v 5 //PUL+(+5v) axis stepper motor step control       RED
+///////////////////////////////////////////////////////////
+#define stepsPerRevolution 6400 //full pulse
+boolean toggle0 = 0;
+boolean toggle1 = 0;
+boolean toggle2 = 0;
+int x, y;
+String infox, infoy, code;
+int erx = 0, ery = 0;
+int spdx, spdy;
+volatile int fx, fy;
+float k = 1.0 / 2.4;
+volatile int jx, jy,jmpu;
+
+double control_signal_x, control_signal_y;
+double kpx = 0, kpy = 10 ; //proportional gain  23
+double kix = 0, kiy = 0; //integral gain 0.017   1.115  0.08
+double kdx = 0, kdy = 0; //derivative gain       1.522   0.5
+double kpxg=15,kdxg=8,kixg=1.5;
+int T = 33; //sample time in milliseconds (ms)
+unsigned long last_time_x = 0, last_time_y = 0;
+unsigned long current_time_x = 0, current_time_y = 0;
+
+double total_error_x = 0, total_error_y = 0;
+double last_error_x = 0, last_error_y = 0;
+int delta_time_x = 0, delta_time_y = 0;
+double delta_error_x = 0, delta_error_y = 0;
+double max_control = 2000;
+double min_control = 2;
+double error;
+boolean bx = false, by = false, bmpu = false;
+
+void setup() {
+calculate_IMU_error();
+  delay(20);
+  cli();
+  TCCR4A = (0 << COM4A1) | (0 << COM4A0) | (0 << COM4B1) | (0 << COM4B0) | (0 << COM4C1) | (0 << COM4C0) | (0 << WGM41) | (0 << WGM40);
+  TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (1 << CS42) | (0 << CS41) | (1 << CS40); //timer on
+  //TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (0 << CS42) | (0 << CS41) | (0 << CS40); //timer off
+
+  TIMSK4 = (0 << ICIE4) | (0 << OCIE4C) | (0 << OCIE4B) | (1 << OCIE4A) | (0 << TOIE4);
+  OCR4A = 150;
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  DDRL = (0 << DDL7) | (0 << DDL6) | (0 << DDL5) | (0 << DDL4) | (1 << DDL3) | (0 << DDL2) | (0 << DDL1) | (0 << DDL0);
+  DDRE = (0 << DDE7) | (0 << DDE6) | (0 << DDE5) | (0 << DDE4) | (1 << DDE3) | (0 << DDE2) | (0 << DDE1) | (0 << DDE0);
+  // State: Bit7=T Bit6=T Bit5=T Bit4=T Bit3=0 Bit2=T Bit1=T Bit0=T
+  PORTL = (0 << PORTL7) | (0 << PORTL6) | (0 << PORTL5) | (0 << PORTL4) | (0 << PORTL3) | (0 << PORTL2) | (0 << PORTL1) | (0 << PORTL0);
+
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  TCCR5A = (0 << COM5A1) | (1 << COM5A0) | (0 << COM5B1) | (0 << COM5B0) | (0 << COM5C1) | (0 << COM5C0) | (0 << WGM51) | (0 << WGM50);
+  TCCR5B = (0 << ICNC5) | (0 << ICES5) | (0 << WGM53) | (1 << WGM52) | (1 << CS52) | (0 << CS51) | (1 << CS50);
+  TIMSK5 = (0 << ICIE5) | (0 << OCIE5C) | (0 << OCIE5B) | (1 << OCIE5A) | (0 << TOIE5);
+  TCNT5H = 0x00;
+  TCNT5L = 0x00;
+  ICR5H = 0x00;
+  ICR5L = 0x00;
+  OCR5A = 255; // just a large number for low motor speed
+  
+  ///////////////////////////////////////////////////////////////////////////////////////////////////
+  sei();
+  // Declare pins as output:
+  pinMode (X_DIRgnd, OUTPUT); //DIR-(DIR)
+  pinMode (X_DIR_5v, OUTPUT); //DIR+(+5v)
+  pinMode (X_STPgnd, OUTPUT); //PUL-(PUL)
+  digitalWrite (X_DIRgnd, LOW); //DIR-(DIR)
+  digitalWrite (X_DIR_5v, LOW); //DIR+(+5v)
+  digitalWrite (X_STPgnd, LOW); //PUL-(PUL)
+  ///////////////////////////////////////////////////////
+  pinMode (Y_DIRgnd, OUTPUT); //DIR-(DIR)
+  pinMode (Y_DIR_5v, OUTPUT); //DIR+(+5v)
+  pinMode (Y_STPgnd, OUTPUT); //PUL-(PUL)
+  digitalWrite (Y_DIRgnd, LOW); //DIR-(DIR)
+  digitalWrite (Y_DIR_5v, LOW); //DIR+(+5v)
+  digitalWrite (Y_STPgnd, LOW); //PUL-(PUL)
+  ////////////////////////////////////////////////////////
+
+  Serial.begin(115200);
+  Serial.setTimeout(500);
+  while (!Serial) {}
+  Wire.begin();                      // Initialize comunication
+  Wire.beginTransmission(MPU);       // Start communication with MPU6050 // MPU=0x68
+  Wire.write(0x6B);                  // Talk to the register 6B
+  Wire.write(0x00);                  // Make reset - place a 0 into the 6B register
+  Wire.endTransmission(true);        //end the transmission
+
+  // Call this function if you need to get the IMU error values for your module
+  
+  //  while (1)
+  //  {
+  //    Serial.readStringUntil('x');
+  //    code = Serial.readStringUntil('y');
+  //    if (code=="101")
+  //    {
+  //          //delay(4);
+  //          TCCR4B = (0 << ICNC4) | (0 << ICES4) | (0 << WGM43) | (1 << WGM42) | (1 << CS42) | (0 << CS41) | (1 << CS40);
+  //          break;
+  //
+  //    }
+  //  }
+}
+void calculate_IMU_error() {
+  // We can call this funtion in the setup section to calculate the accelerometer and gyro data error. From here we will get the error values used in the above equations printed on the Serial Monitor.
+  // Note that we should place the IMU flat in order to get the proper values, so that we then can the correct values
+  // Read accelerometer values 200 times
+  while (c < 200) {
+    Wire.beginTransmission(MPU);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU, 6, true);
+    AccX = (Wire.read() << 8 | Wire.read()) / 16384.0 ;
+    AccY = (Wire.read() << 8 | Wire.read()) / 16384.0 ;
+    AccZ = (Wire.read() << 8 | Wire.read()) / 16384.0 ;
+    // Sum all readings
+    AccErrorX = AccErrorX + ((atan((AccY) / sqrt(pow((AccX), 2) + pow((AccZ), 2))) * 180 / PI));
+    AccErrorY = AccErrorY + ((atan(-1 * (AccX) / sqrt(pow((AccY), 2) + pow((AccZ), 2))) * 180 / PI));
+    c++;
+  }
+  //Divide the sum by 200 to get the error value
+  AccErrorX = AccErrorX / 200;
+  AccErrorY = AccErrorY / 200;
+  c = 0;
+  // Read gyro values 200 times
+  while (c < 200) {
+    Wire.beginTransmission(MPU);
+    Wire.write(0x43);
+    Wire.endTransmission(false);
+    Wire.requestFrom(MPU, 6, true);
+    GyroX = Wire.read() << 8 | Wire.read();
+    GyroY = Wire.read() << 8 | Wire.read();
+    GyroZ = Wire.read() << 8 | Wire.read();
+    // Sum all readings
+    GyroErrorX = GyroErrorX + (GyroX / 131.0);
+    GyroErrorY = GyroErrorY + (GyroY / 131.0);
+    GyroErrorZ = GyroErrorZ + (GyroZ / 131.0);
+    c++;
+  }
+  GyroErrorX = GyroErrorX / 200;
+  GyroErrorY = GyroErrorY / 200;
+  GyroErrorZ = GyroErrorZ / 200;
+}
+
+void dir(int e, char a)
+{
+  if (a == 'x')
+  {
+    if (e < 0)
+    {
+      digitalWrite (X_DIR_5v, HIGH);
+    }
+    if (e > 0)
+    {
+      digitalWrite (X_DIR_5v, LOW);
+    }
+  }
+  else if (a == 'y')
+  {
+    if (e < 0)
+    {
+      digitalWrite (Y_DIR_5v, HIGH);
+    }
+    if (e > 0)
+    {
+      digitalWrite (Y_DIR_5v, LOW);
+    }
+  }
+}
+
+
+
+void read1()
+{
+  if (Serial.available() > 10)
+  {
+
+    Serial.readStringUntil('a');
+    //delay(5);
+    infox = Serial.readStringUntil('c');
+    infoy = Serial.readStringUntil('d');
+    x = infox.toInt();
+    y = infoy.toInt();
+    if (x != 0)
+    {
+      erx = x;
+      if (erx == 404)
+      {
+        erx = 0;
+      }
+      bx = true;
+    }
+    if (y != 0)
+    {
+      ery = y;
+      if (ery == 404)
+      {
+        ery = 0;
+      }
+      by = true;
+    }
+
+  }
+}
+
+
+
+void PID_Control_x()
+{
+  if ( T == 33)
+  {
+    spdx = k * erx;
+    total_error_x += spdx;
+    delta_error_x = spdx - last_error_x;
+    control_signal_x = kpx * spdx + (0.001 * kix * T) * total_error_x + 1000 * (kdx / T) * delta_error_x;
+    if (control_signal_x < 0) control_signal_x = -control_signal_x;
+    if (control_signal_x >= max_control) control_signal_x = max_control;
+    else if (control_signal_x <= min_control) control_signal_x = min_control;
+    fx = control_signal_x;
+    jx = (7812.5 / fx) - 1;
+  }
+  last_error_x = spdx;
+
+
+}
+
+void PID_Control_y()
+{
+  ery = pitch;
+  spdy = k * ery;
+  total_error_y += spdy;
+  delta_error_y = spdy - last_error_y;
+  control_signal_y = kpy * spdy + (0.001 * kiy * T) * total_error_y + 1000 * (kdy / T) * delta_error_y;
+  control_signal_y = control_signal_y * 1.453;
+  if (control_signal_y < 0) control_signal_y = -control_signal_y;
+  if (control_signal_y >= max_control * 1.453) control_signal_y = max_control * 1.453;
+  else if (control_signal_y <= min_control) control_signal_y = min_control;
+  fy = control_signal_y;
+  jy = (7812.5 / fy) - 1;
+  last_error_y = spdy;
+}
+void readMpu()
+{
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B); // Start with register 0x3B (ACCEL_XOUT_H)
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true); // Read 6 registers total, each axis value is stored in 2 registers
+  //For a range of +-2g, we need to divide the raw values by 16384, according to the datasheet
+  AccX = (Wire.read() << 8 | Wire.read()) / 16384.0; // X-axis value
+  AccY = (Wire.read() << 8 | Wire.read()) / 16384.0; // Y-axis value
+  AccZ = (Wire.read() << 8 | Wire.read()) / 16384.0; // Z-axis value
+  // Calculating Roll and Pitch from the accelerometer data
+  accAngleX = (atan(AccY / sqrt(pow(AccX, 2) + pow(AccZ, 2))) * 180 / PI) - 0.58; // AccErrorX ~(0.58) See the calculate_IMU_error()custom function for more details
+  accAngleY = (atan(-1 * AccX / sqrt(pow(AccY, 2) + pow(AccZ, 2))) * 180 / PI) + 1.58; // AccErrorY ~(-1.58)
+  // === Read gyroscope data === //
+  elapsedTime = (33) / 1000; // Divide by 1000 to get seconds
+  Wire.beginTransmission(MPU);
+  Wire.write(0x43); // Gyro data first register address 0x43
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU, 6, true); // Read 4 registers total, each axis value is stored in 2 registers
+  GyroX = (Wire.read() << 8 | Wire.read()) / 131.0; // For a 250deg/s range we have to divide first the raw value by 131.0, according to the datasheet
+  GyroY = (Wire.read() << 8 | Wire.read()) / 131.0;
+  GyroZ = (Wire.read() << 8 | Wire.read()) / 131.0;
+  // Correct the outputs with the calculated error values
+  GyroX = GyroX - GyroErrorX; // GyroErrorX ~(-0.56)
+  GyroY = GyroY - GyroErrorY; // GyroErrorY ~(2)
+  GyroZ = GyroZ - GyroErrorZ; // GyroErrorZ ~ (-0.8)
+  // Currently the raw values are in degrees per seconds, deg/s, so we need to multiply by sendonds (s) to get the angle in degrees
+  if(abs(GyroX)<1.4)
+  {
+    GyroX=round(GyroX);
+    fxg=0;
+  }
+  else
+  {
+    GyroX=GyroX*60/(360.0);
+    fxg=(GyroX)/0.0047;
+  }
+  
+  if(abs(GyroY)<1.4)
+  {
+    GyroY=round(GyroY);
+    fyg=0;
+  }
+  else
+  {
+    GyroY=GyroY*60/(360.0);
+    fyg=(GyroY)/0.0047;
+  }
+  
+  if(abs(GyroZ)<1.4)
+  {
+    GyroZ=round(GyroZ);
+    fzg=0;
+  }
+  else
+  {
+    GyroZ=GyroZ*60/(360.0);
+    fzg=(abs(GyroZ)-1.3897)/0.0081;
+  }
+  control_signal_gz=fzg;
+  ezg=control_signal_gz;
+  total_error_x += ezg;
+    delta_error_x = ezg - last_error_x;
+    control_signal_x = kpxg * spdx + (0.001 * kixg * T) * total_error_x + 1000 * (kdxg / T) * delta_error_x;
+  if (control_signal_gz < 0) control_signal_gz = -control_signal_gz;
+    if (control_signal_gz >= max_control) control_signal_gz = max_control;
+    else if (control_signal_gz <= min_control) control_signal_gz = min_control;
+    fzg = control_signal_gz;
+  bmpu=true;
+  jmpu = (7812.5 / fzg) - 1;
+  last_error_x = ezg;
+}
+
+
+void loop()
+{
+  
+}
+
+ISR(TIMER5_COMPA_vect)
+{
+  sei();
+  OCR5A = jmpu;
+}
+
+ISR(TIMER4_COMPA_vect)
+{
+  sei();
+  readMpu();
+  if (bmpu)
+  {
+    dir(-GyroZ, 'x');
+    bmpu = false;
+
+  }
+}
